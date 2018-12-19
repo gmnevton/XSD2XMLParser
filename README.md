@@ -1,6 +1,6 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.14.0
+    XSD to XML Parser v.15.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
@@ -29,3 +29,5 @@
       v.12 - 2017.09.22 - GM - changes to Xml.VerySimple, ScanNodes procedure is now a function, that returns False for break in loop
       v.13 - 2017.10.18 - GM - added extended attribute 'default' to TXSD2XMLParser.IsBuiltinAttr
       v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
+      v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
+      
