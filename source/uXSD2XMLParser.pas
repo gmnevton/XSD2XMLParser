@@ -1,5 +1,5 @@
 {
-  XSD to XML Parser v.14.0
+  XSD to XML Parser v.15.0
 
   Reads XSD schema and outputs XML structure described by schema,
     contains only default or fixed values for nodes and attributes.
@@ -27,6 +27,7 @@
     v.12 - 2017.09.22 - GM - changes to Xml.VerySimple, ScanNodes procedure is now a function, that returns False for break in loop
     v.13 - 2017.10.18 - GM - added extended attribute 'default' to TXSD2XMLParser.IsBuiltinAttr
     v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
+    v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
 }
 
 unit uXSD2XMLParser;
@@ -166,7 +167,7 @@ type
     function IsFixed(const Node: TXmlNode; var FixedValue: String): Boolean; virtual;
     function IsSimpleContent(const Node: TXmlNode): Boolean; virtual; // text only child elements
     function IsMixed(const Node: TXmlNode): Boolean; virtual; // text and child elements inside
-    function IsBuiltinElement(const ElementName: String): Boolean; virtual;
+    function IsBuiltinSkipableElement(const Node: TXmlNode): Boolean; virtual;
     class function IsBuiltinAttr(const AttributeName: String; const IncludeExtended: Boolean = False): Boolean; virtual;
     function IsPascalType(const TypeName: String): Boolean;
 
@@ -351,6 +352,23 @@ end;
 { TNodeInfo }
 
 class function TNodeInfo.GetNodeInfo(const Node: TXmlNode): String;
+
+  function NodeTypeToString(const ANodeType: TXmlNodeType): String;
+  begin
+    case ANodeType of
+      ntElement        : Result:='Element';
+      ntText           : Result:='Text';
+      ntCData          : Result:='CData';
+      ntProcessingInstr: Result:='Processing instruction';
+      ntComment        : Result:='Comment';
+      ntDocument       : Result:='Document';
+      ntDocType        : Result:='Document type declaration';
+      ntXmlDecl        : Result:='XML declaration';
+    else
+      Result:='';
+    end;
+  end;
+
 var
   Child: TXmlNode;
 begin
@@ -362,6 +380,7 @@ begin
       Child:=Child.ParentNode;
     end;
     Result:='"' + Result + Node.Name + '(' + Node.AttributeList.AsString + ')"';
+    Result:=Result + #13#10 + Format('Level: %d, Index: %d, Type: %s', [Node.Level, Node.Index, NodeTypeToString(Node.NodeType)]);
   end;
 end;
 
@@ -695,19 +714,29 @@ begin
   Result:=(Node.HasAttribute('mixed') and (LowerCase(Node.Attributes['mixed']) = 'true'));
 end;
 
-function TXSD2XMLParser.IsBuiltinElement(const ElementName: String): Boolean;
+function TXSD2XMLParser.IsBuiltinSkipableElement(const Node: TXmlNode): Boolean;
+var
+  ElementName: String;
 begin
   Result:=False;
-  if ElementName = 'annotation' then
-    Result:=True
-  else if ElementName = 'any' then
-    Result:=True
-  else if ElementName = 'anyAttribute' then
-    Result:=True
-  else if ElementName = 'appinfo' then
-    Result:=True
-  else if ElementName = 'documentation' then
+  if (Node.Name = '') and (Node.NodeType <> ntElement) then begin
     Result:=True;
+    Exit;
+  end
+  else begin
+    ElementName:=Node.Name;
+    if ElementName = 'annotation' then
+      Result:=True
+    else if ElementName = 'any' then
+      Result:=True
+    else if ElementName = 'anyAttribute' then
+      Result:=True
+    else if ElementName = 'appinfo' then
+      Result:=True
+    else if ElementName = 'documentation' then
+      Result:=True;
+    ElementName:='';
+  end;
 end;
 
 class function TXSD2XMLParser.IsBuiltinAttr(const AttributeName: String; const IncludeExtended: Boolean = False): Boolean;
@@ -1072,8 +1101,8 @@ begin
 //      ParseList(Child, Parent)
     else if IsSame(Child.Name, 'union') then
       ParseUnion(Child, Parent)
-    else if IsBuiltinElement(Child.Name) then begin
-      // Built in elements - do nothing
+    else if IsBuiltinSkipableElement(Child) then begin
+      // Built in elements that can be skiped - do nothing
     end
     else begin
       raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
@@ -1122,8 +1151,8 @@ begin
         ParseComplexType(Child, Parent)
       else if IsSame(Child.Name, 'attribute') then
         ParseAttribute(Child, Parent)
-      else if IsBuiltinElement(Child.Name) then begin
-        // Built in elements - do nothing
+      else if IsBuiltinSkipableElement(Child) then begin
+        // Built in elements that can be skiped - do nothing
       end
       else begin
         raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
@@ -1506,8 +1535,8 @@ begin
         ParseChoice(Child, Parent)
       else if IsSame(Child.Name, 'sequence') then
         ParseSequence(Child, Parent)
-      else if IsBuiltinElement(Child.Name) then begin
-        // Built in elements - do nothing
+      else if IsBuiltinSkipableElement(Child) then begin
+        // Built in elements that can be skiped - do nothing
       end
       else if IsBuiltinAttr(Child.Name) then
         ParseBuiltinAttr(Child, Parent)
@@ -1553,8 +1582,8 @@ begin
       ParseChoice(Child, Parent)
     else if IsSame(Child.Name, 'sequence') then
       ParseSequence(Child, Parent)
-    else if IsBuiltinElement(Child.Name) then begin
-      // Built in elements - do nothing
+    else if IsBuiltinSkipableElement(Child) then begin
+      // Built in elements that can be skiped - do nothing
     end
     else if IsBuiltinAttr(Child.Name) then
       ParseBuiltinAttr(Child, Parent)
