@@ -1,13 +1,13 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.15.0
+    XSD to XML Parser v.16.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
     contains only default or fixed values for nodes and attributes.
 
     Author:
-      (C) 2015-2018, Grzegorz Molenda; gmnevton@o2.pl
+      (C) 2015-2019, Grzegorz Molenda; gmnevton@o2.pl
 
     Documentation:
       http://www.w3schools.com/schema/default.asp
@@ -30,4 +30,5 @@
       v.13 - 2017.10.18 - GM - added extended attribute 'default' to TXSD2XMLParser.IsBuiltinAttr
       v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
       v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
+      v.16 - 2019.01.17 - GM - do not skip 'annotation' for element nodes, just resolve them if xsdParseAnnotations is in Options; replace ChildNodes.First by FirstChild
       
