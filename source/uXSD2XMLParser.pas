@@ -1,11 +1,11 @@
 {
-  XSD to XML Parser v.15.0
+  XSD to XML Parser v.16.0
 
   Reads XSD schema and outputs XML structure described by schema,
     contains only default or fixed values for nodes and attributes.
 
   Author:
-    (C) 2015-2018, Grzegorz Molenda; gmnevton@o2.pl
+    (C) 2015-2019, Grzegorz Molenda; gmnevton@o2.pl
 
   Documentation:
     http://www.w3schools.com/schema/default.asp
@@ -28,6 +28,7 @@
     v.13 - 2017.10.18 - GM - added extended attribute 'default' to TXSD2XMLParser.IsBuiltinAttr
     v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
     v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
+    v.16 - 2019.01.17 - GM - do not skip 'annotation' for element nodes, just resolve them if xsdParseAnnotations is in Options; replace ChildNodes.First by FirstChild
 }
 
 unit uXSD2XMLParser;
@@ -45,8 +46,9 @@ uses
 type
   ENodeException = class(Exception);
 
-  TXSDOptions = set of (xsdNodeAutoIndent, xsdCompact, xsdParseProcessingInstr, xsdParseImportInstr, xsdPreserveWhiteSpace,
-                        xsdCaseInsensitive, xsdSearchAutoIncludeNamespacePrefix, xsdWriteBOM);
+  TXSDOption = (xsdNodeAutoIndent, xsdCompact, xsdParseProcessingInstr, xsdParseImportInstr, xsdPreserveWhiteSpace,
+                xsdCaseInsensitive, xsdSearchAutoIncludeNamespacePrefix, xsdWriteBOM, xsdParseAnnotations);
+  TXSDOptions = set of TXSDOption;
 
   TXSDElementType = (etUnknown,
                      etToken, // remove line feeds, carriage returns, tabs, leading and trailing spaces, and multiple spaces
@@ -167,7 +169,7 @@ type
     function IsFixed(const Node: TXmlNode; var FixedValue: String): Boolean; virtual;
     function IsSimpleContent(const Node: TXmlNode): Boolean; virtual; // text only child elements
     function IsMixed(const Node: TXmlNode): Boolean; virtual; // text and child elements inside
-    function IsBuiltinSkipableElement(const Node: TXmlNode): Boolean; virtual;
+    function IsBuiltinSkipableElement(const Node: TXmlNode; const IncludeExtended: Boolean = False): Boolean; virtual;
     class function IsBuiltinAttr(const AttributeName: String; const IncludeExtended: Boolean = False): Boolean; virtual;
     function IsPascalType(const TypeName: String): Boolean;
 
@@ -190,6 +192,7 @@ type
     procedure ParseSchemaAttributes(const Node: TXmlNode);
     procedure ParseImport(const Node: TXmlNode; var Parent: TXmlNode);
     procedure ParseElement(const Node: TXmlNode; var Parent: TXmlNode; const Recursive: Boolean = False; const Optional: Boolean = False);
+    procedure ParseAnnotation(const Node: TXmlNode; var Parent: TXmlNode);
     procedure ParseSimpleType(const Node: TXmlNode; var Parent: TXmlNode);
     procedure ParseComplexType(const Node: TXmlNode; var Parent: TXmlNode);
     procedure ParseRestriction(const Node: TXmlNode; var Parent: TXmlNode);
@@ -311,9 +314,13 @@ begin
       finally
         reader.Free;
       end;
+    end
+    else begin
+      raise ENodeException.CreateFmt('Import URI not recognized!'#13#10'%s', [URI]);
     end;
   except
     Result:='';
+    raise;
   end;
 end;
 
@@ -339,8 +346,9 @@ begin
     xsd:=LoadXSDImport(path);
     if xsd <> '' then
       Import.Add(xsd)
-    else
-      FreeAndNil(Import);
+    else begin
+      raise ENodeException.Create('Import must not be empty!');
+    end;
   except
     Import.Free;
     raise;
@@ -572,7 +580,7 @@ end;
 
 constructor TXSD2XMLParser.Create;
 begin
-  Options := [xsdNodeAutoIndent, xsdParseImportInstr, xsdSearchAutoIncludeNamespacePrefix];
+  Options := [xsdNodeAutoIndent, xsdParseImportInstr, xsdSearchAutoIncludeNamespacePrefix, xsdParseAnnotations];
   FXSD:=TXmlVerySimple.Create;
   FXSDImports:=TXSDImportList.Create;
   FXML:=TXmlVerySimple.Create;
@@ -714,7 +722,7 @@ begin
   Result:=(Node.HasAttribute('mixed') and (LowerCase(Node.Attributes['mixed']) = 'true'));
 end;
 
-function TXSD2XMLParser.IsBuiltinSkipableElement(const Node: TXmlNode): Boolean;
+function TXSD2XMLParser.IsBuiltinSkipableElement(const Node: TXmlNode; const IncludeExtended: Boolean = False): Boolean;
 var
   ElementName: String;
 begin
@@ -725,15 +733,15 @@ begin
   end
   else begin
     ElementName:=Node.Name;
-    if ElementName = 'annotation' then
+    if IncludeExtended and (ElementName = 'annotation') then
+      Result:=True
+    else if IncludeExtended and (ElementName = 'documentation') then
       Result:=True
     else if ElementName = 'any' then
       Result:=True
     else if ElementName = 'anyAttribute' then
       Result:=True
     else if ElementName = 'appinfo' then
-      Result:=True
-    else if ElementName = 'documentation' then
       Result:=True;
     ElementName:='';
   end;
@@ -827,11 +835,11 @@ var
   Child: TXmlNode;
 begin
   Result:=stUnknown;
-  Child:=Node.ChildNodes.First;
+  Child:=Node.FirstChild;
   if Child = Nil then
     Exit;
 
-  if LowerCase(Child.Name) = 'annotation' then
+  if LowerCase(Child.Name) = 'annotation' then // skip this element
     Child:=Child.NextSibling;
 
   if Child <> Nil then
@@ -855,11 +863,11 @@ begin
   if Node.ChildNodes.Count = 0 then
     Exit;
 
-  Child:=Node.ChildNodes.First;
+  Child:=Node.FirstChild;
   if Child = Nil then
     Exit;
 
-  if LowerCase(Child.Name) = 'annotation' then
+  if LowerCase(Child.Name) = 'annotation' then // skip this element
     Child:=Child.NextSibling;
 
   if Child <> Nil then
@@ -1000,12 +1008,14 @@ begin
 
   Parent:=Nil; // the FXML node
   Node:=FXSD.DocumentElement;
+  if Node = Nil then
+    raise ENodeException.Create('XSD schema not loaded!');
 
   ParseSchemaAttributes(Node);
 
   while Node <> Nil do begin
     if IsSame(Node.Name, 'schema') then begin
-      Node:=Node.ChildNodes.First;
+      Node:=Node.FirstChild;
     end;
 
     if IsSame(Node.Name, 'import') and (xsdParseImportInstr in Options) then
@@ -1049,7 +1059,7 @@ end;
 
 procedure TXSD2XMLParser.ParseElement(const Node: TXmlNode; var Parent: TXmlNode; const Recursive: Boolean = False; const Optional: Boolean = False);
 var
-  Child: TXmlNode;
+  Child, TempNode: TXmlNode;
   ReferenceName, NodeType: String;
 begin
   // check if it is referenced, if it is then skip
@@ -1057,26 +1067,52 @@ begin
     if IsReferenced(Node, ReferenceName) then begin // referenced type
       ParseReference(Node, Parent, ReferenceName);
     end
-    else if IsSimpleType(Node) then begin
-      Parent:=Add(Node, Parent, '', True, Optional);
-      Child:=Node.FindNode('simpleType', [ntElement], [nsRecursive]); // recursive
-      if Child = Nil then
-        Child:=Node;
-      ParseSimpleType(Child, Parent);
-      Parent:=Parent.ParentNode;
-    end
-    else if IsTypeDeclared(Node, NodeType) then begin // check if it is referenced by type declaration
-      Parent:=Add(Node, Parent, '', True, Optional);
-      ParseTypeReference(Node, Parent, NodeType);
-      Parent:=Parent.ParentNode;
-    end
-    else if IsComplexType(Node) then begin // complex type
-      Parent:=Add(Node, Parent, '', True, Optional);
-      Child:=Node.FindNode('complexType', [ntElement], [nsRecursive]); // recursive
-      if Child <> Nil then
-        ParseComplexType(Child, Parent);
-      Parent:=Parent.ParentNode;
+    else begin
+      if Node.HasChildNodes then begin
+        Child:=Node.FirstChild;
+        if (Child <> Nil) and (xsdParseAnnotations in Options) and IsSame(Child.Name, 'annotation') then begin
+          TempNode:=Node;
+          ParseAnnotation(Child, TempNode);
+          TempNode:=Nil;
+        end;
+      end;
+      //
+      if IsSimpleType(Node) then begin
+        Parent:=Add(Node, Parent, '', True, Optional);
+        Child:=Node.FindNode('simpleType', [ntElement], [nsRecursive]); // recursive
+        if Child = Nil then
+          Child:=Node;
+        ParseSimpleType(Child, Parent);
+        Parent:=Parent.ParentNode;
+      end
+      else if IsTypeDeclared(Node, NodeType) then begin // check if it is referenced by type declaration
+        Parent:=Add(Node, Parent, '', True, Optional);
+        ParseTypeReference(Node, Parent, NodeType);
+        Parent:=Parent.ParentNode;
+      end
+      else if IsComplexType(Node) then begin // complex type
+        Parent:=Add(Node, Parent, '', True, Optional);
+        Child:=Node.FindNode('complexType', [ntElement], [nsRecursive]); // recursive
+        if Child <> Nil then
+          ParseComplexType(Child, Parent);
+        Parent:=Parent.ParentNode;
+      end;
     end;
+  end;
+end;
+
+procedure TXSD2XMLParser.ParseAnnotation(const Node: TXmlNode; var Parent: TXmlNode);
+var
+  Child: TXmlNode;
+begin
+  Child:=Node.FirstChild;
+  while Child <> Nil do begin
+    if IsSame(Child.Name, 'documentation') and (Child.Text <> '') then
+      Parent.Attributes['info']:=Child.Text
+    else begin
+      raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+    end;
+    Child:=Child.NextSibling;
   end;
 end;
 
@@ -1093,7 +1129,7 @@ begin
 
   Node.Attributes['resolved']:='false';
 
-  Child:=Child.ChildNodes.First;
+  Child:=Child.FirstChild;
   while Child <> Nil do begin
     if IsSame(Child.Name, 'restriction') then
       ParseRestriction(Child, Parent)
@@ -1101,7 +1137,7 @@ begin
 //      ParseList(Child, Parent)
     else if IsSame(Child.Name, 'union') then
       ParseUnion(Child, Parent)
-    else if IsBuiltinSkipableElement(Child) then begin
+    else if IsBuiltinSkipableElement(Child, True) then begin
       // Built in elements that can be skiped - do nothing
     end
     else begin
@@ -1135,7 +1171,7 @@ begin
 
   Node.Attributes['resolved']:='false';
 
-    Child:=Child.ChildNodes.First;
+    Child:=Child.FirstChild;
     while Child <> Nil do begin
       if IsSame(Child.Name, 'element') then
         ParseElement(Child, Parent)
@@ -1151,7 +1187,7 @@ begin
         ParseComplexType(Child, Parent)
       else if IsSame(Child.Name, 'attribute') then
         ParseAttribute(Child, Parent)
-      else if IsBuiltinSkipableElement(Child) then begin
+      else if IsBuiltinSkipableElement(Child, True) then begin
         // Built in elements that can be skiped - do nothing
       end
       else begin
@@ -1183,7 +1219,7 @@ begin
     complex_type:=GetComplexType(Child);
     if complex_type <> ctUnknown then begin // extension complex type parse
       Child:=Node;
-      Child:=Child.ChildNodes.First;
+      Child:=Child.FirstChild;
       while Child <> Nil do begin
 //        if IsSame(Child.Name, 'all') then
 //          ParseAttribute(Child, Parent)
@@ -1207,7 +1243,7 @@ begin
       if Child.ChildNodes.Count = 0 then
         Exit;
 
-      Child:=Child.ChildNodes.First;
+      Child:=Child.FirstChild;
       while Child <> Nil do begin
         if IsSame(Child.Name, 'attribute') then
           ParseAttribute(Child, Parent)
@@ -1243,7 +1279,7 @@ begin
     complex_type:=GetComplexType(Child);
     if complex_type <> ctUnknown then begin // extension complex type parse
       Child:=Node;
-      Child:=Child.ChildNodes.First;
+      Child:=Child.FirstChild;
       while Child <> Nil do begin
 //        if IsSame(Child.Name, 'all') then
 //          ParseAttribute(Child, Parent)
@@ -1267,7 +1303,7 @@ begin
       if Child.ChildNodes.Count = 0 then
         Exit;
 
-      Child:=Child.ChildNodes.First;
+      Child:=Child.FirstChild;
       while Child <> Nil do begin
         if IsSame(Child.Name, 'attribute') then
           ParseAttribute(Child, Parent)
@@ -1499,7 +1535,7 @@ var
   Child: TXmlNode;
 begin
   Child:=Node;
-  Child:=Child.ChildNodes.First;
+  Child:=Child.FirstChild;
   while Child <> Nil do begin
     if IsSame(Child.Name, 'simpleType') then
       ParseSimpleType(Child, Parent)
@@ -1525,7 +1561,7 @@ begin
     end;
 
     Child:=Node;
-    Child:=Child.ChildNodes.First;
+    Child:=Child.FirstChild;
     while Child <> Nil do begin
       if IsSame(Child.Name, 'element') then
         ParseElement(Child, Parent)
@@ -1535,7 +1571,7 @@ begin
         ParseChoice(Child, Parent)
       else if IsSame(Child.Name, 'sequence') then
         ParseSequence(Child, Parent)
-      else if IsBuiltinSkipableElement(Child) then begin
+      else if IsBuiltinSkipableElement(Child, True) then begin
         // Built in elements that can be skiped - do nothing
       end
       else if IsBuiltinAttr(Child.Name) then
@@ -1572,7 +1608,7 @@ begin
 
   // element | group | choice | sequence | any
   Child:=Node;
-  Child:=Child.ChildNodes.First;
+  Child:=Child.FirstChild;
   while Child <> Nil do begin
     if IsSame(Child.Name, 'element') then
       ParseElement(Child, Parent)
@@ -1582,7 +1618,7 @@ begin
       ParseChoice(Child, Parent)
     else if IsSame(Child.Name, 'sequence') then
       ParseSequence(Child, Parent)
-    else if IsBuiltinSkipableElement(Child) then begin
+    else if IsBuiltinSkipableElement(Child, True) then begin
       // Built in elements that can be skiped - do nothing
     end
     else if IsBuiltinAttr(Child.Name) then
