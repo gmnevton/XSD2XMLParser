@@ -1,7 +1,7 @@
 program XSD2XMLConverterDemo;
 
 uses
-  Vcl.Forms,
+  Forms,
   uMain in 'uMain.pas' {Form1};
 
 {$R *.res}
