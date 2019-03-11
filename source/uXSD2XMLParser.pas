@@ -1,5 +1,5 @@
 {
-  XSD to XML Parser v.16.0
+  XSD to XML Parser v.17.0
 
   Reads XSD schema and outputs XML structure described by schema,
     contains only default or fixed values for nodes and attributes.
@@ -29,6 +29,9 @@
     v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
     v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
     v.16 - 2019.01.17 - GM - do not skip 'annotation' for element nodes, just resolve them if xsdParseAnnotations is in Options; replace ChildNodes.First by FirstChild
+    v.17 - 2019.02.15 - GM - speedup conversion; added custom THashedStringList to hold parsed types; some minor fixes with regard to speedup
+         + 2019.02.27 - GM - fixed MakeXSDImport to properly load shemas from local hard drive
+         + 2019.03.10 - GM - added SSL/TLS support for schema downloading rutine; forced HTTP request to retrun UTF-8 encoded data
 }
 
 unit uXSD2XMLParser;
@@ -36,8 +39,8 @@ unit uXSD2XMLParser;
 interface
 
 uses
-  Classes,
   SysUtils,
+  Classes,
   Generics.Defaults,
   Generics.Collections,
   Xml.VerySimple,
@@ -113,6 +116,7 @@ type
   private
     FImport: TXmlVerySimple;
     FXSDImports: TXSDImportList;
+    FPath: String;
 
     procedure ParseImport;
   public
@@ -123,7 +127,7 @@ type
     constructor Create; virtual;
     destructor Destroy; override;
 
-    function Add(const Value: String): TXSDImport;
+    function Add(const Path, Value: String): TXSDImport;
 
     property Import: TXmlVerySimple read FImport;
     property XSDImports: TXSDImportList read FXSDImports;
@@ -141,17 +145,81 @@ type
 
   TXSDImportsSearchRootList = class(TObjectList<TXmlNode>);
 
+  TStringHashRec = record
+    Value: String;
+    Hash: LongWord;
+{    case Boolean of
+      False: (HashInsensitive: Integer);
+      True: (HashSensitive: Integer);}
+  end;
+  PStringHashRec = ^TStringHashRec;
+
+  TObjectIndex = 1..2;
+
+  TStringRec = record
+    Name: PStringHashRec;
+    Value: PStringHashRec;
+    ObjectRef1: TObject;
+    ObjectRef2: TObject;
+  end;
+  PStringRec = ^TStringRec;
+
+  THashedStringList = class(TPersistent)
+  private
+    FList: TList;
+    FCaseSensitive: Boolean;
+    FOwnsObjects: Boolean;
+  protected
+    function GetValue(Name: String): String; virtual;
+    function GetItem(Index: Integer): PStringRec; virtual;
+    function GetText(Index: Integer): String; virtual;
+    function GetObject(Index: Integer; ObjIndex: TObjectIndex): TObject; virtual;
+    procedure SetValue(Name: String; const Value: String); virtual;
+    procedure SetItem(Index: Integer; const Value: PStringRec); virtual;
+    procedure SetText(Index: Integer; const Value: String); virtual;
+    procedure SetObject(Index: Integer; ObjIndex: TObjectIndex; const Value: TObject); virtual;
+    function StringExists(const S: String): Boolean; overload;
+    function StringExists(const S: String; var atIndex: Integer): Boolean; overload;
+    function ValueExists(const S: String): Boolean; overload;
+    function ValueExists(const S: String; var atIndex: Integer): Boolean; overload;
+  public
+    constructor Create; overload;
+    constructor Create(const CaseSensitive: Boolean); overload;
+    constructor Create(const CaseSensitive: Boolean; const OwnsObjects: Boolean); overload;
+    destructor Destroy; override;
+  public
+    function Add(const S: String; const Value: String = ''): Integer;
+    function AddObject(const S: String; const AObject1, AObject2: TObject): Integer;
+    procedure Clear;
+    function Count: Integer;
+    function IndexOfName(const S: String): Integer;
+    function IndexOfValue(const S: String): Integer;
+    procedure Delete(Index: Integer; const ForceFreeObject: Boolean = False);
+    procedure Exchange(Index1, Index2: Integer);
+    procedure Insert(Index: Integer; const S: String; const Value: String = ''); overload;
+    procedure Insert(Index: Integer; const S: String; const AObject1, AObject2: TObject); overload;
+  public
+    property CaseSensitive: Boolean read FCaseSensitive write FCaseSensitive;
+    property OwnsObjects: Boolean read FOwnsObjects write FOwnsObjects;
+    property Names[Index: Integer]: String read GetText write SetText;
+    property Values[Name: String]: String read GetValue write SetValue;
+    property Items[Index: Integer]: PStringRec read GetItem write SetItem; default;
+    property Objects[Index: Integer; ObjIndex: TObjectIndex]: TObject read GetObject write SetObject;
+  end;
+
   TXSD2XMLParser = class(TObject)
   private
     FXSD: TXmlVerySimple;
     FXSDImports: TXSDImportList;
     FXML: TXmlVerySimple;
     FLastXSDImportsSearchRoot: TXSDImportsSearchRootList;
+    FParsedTypes: THashedStringList;
     FSchemaPrefix: String;
     FSchemaNamespace: String;
     FSchemaTargetNamespace: String;
     FIncludePrefix: Boolean;
     FIncludePrefixString: TStringArray;
+    FAbsolutePath: String;
   protected
     function GetXMLString: String;
     function IsSame(const Value1, Value2: String): Boolean;
@@ -160,8 +228,8 @@ type
     function HasReference(const Node: TXmlNode): Boolean; virtual;
 
     function IsReferenced(const Node: TXmlNode; var ReferenceName: String): Boolean; virtual;
-    function IsSimpleType(const Node: TXmlNode): Boolean; virtual;
-    function IsComplexType(const Node: TXmlNode): Boolean; virtual;
+    function IsSimpleType(const Node: TXmlNode; out Child: TXmlNode): Boolean; virtual;
+    function IsComplexType(const Node: TXmlNode; out Child: TXmlNode): Boolean; virtual;
     function IsTypeDeclared(const Node: TXmlNode; var TypeDeclared: String): Boolean; virtual;
     function IsAbstract(const Node: TXmlNode): Boolean; virtual;
     function IsOptional(const Node: TXmlNode): Boolean; virtual;
@@ -219,54 +287,56 @@ implementation
 uses
   StrUtils,
   IdHTTP,
+  IdSSLOpenSSL,
   IdCompressorZLib;
 
 const
-  TXSDElementTypeString: Array[TXSDElementType] of String = ('--unknown--',
-                                                             'token',
-                                                             'string',
-                                                             'float',
-                                                             'decimal',
-                                                             'integer',
-                                                             'byte',
-                                                             'int',
-                                                             'long',
-                                                             'negativeinteger',
-                                                             'nonnegativeinteger',
-                                                             'nonpositiveinteger',
-                                                             'positiveinteger',
-                                                             'short',
-                                                             'unsignedlong',
-                                                             'unsignedint',
-                                                             'unsignedshort',
-                                                             'unsignedbyte',
-                                                             'boolean',
-                                                             'date',
-                                                             'time',
-                                                             'datetime',
-                                                             'gday',
-                                                             'gmonth',
-                                                             'gmonthday',
-                                                             'gyear',
-                                                             'gyearmonth',
-                                                             'normalizedstring',
-                                                             'duration',
-                                                             'base64binary',
-                                                             'hexbinary',
-                                                             'anyuri',
-                                                             'entity',
-                                                             'entities',
-                                                             'id',
-                                                             'idref',
-                                                             'idrefs',
-                                                             'language',
-                                                             'name',
-                                                             'ncname',
-                                                             'nmtoken',
-                                                             'nmtokens',
-                                                             'qname',
-                                                             'notation'
-                                                            );
+  TXSDElementTypeString: Array[TXSDElementType] of String = (
+    '--unknown--',
+    'token',
+    'string',
+    'float',
+    'decimal',
+    'integer',
+    'byte',
+    'int',
+    'long',
+    'negativeinteger',
+    'nonnegativeinteger',
+    'nonpositiveinteger',
+    'positiveinteger',
+    'short',
+    'unsignedlong',
+    'unsignedint',
+    'unsignedshort',
+    'unsignedbyte',
+    'boolean',
+    'date',
+    'time',
+    'datetime',
+    'gday',
+    'gmonth',
+    'gmonthday',
+    'gyear',
+    'gyearmonth',
+    'normalizedstring',
+    'duration',
+    'base64binary',
+    'hexbinary',
+    'anyuri',
+    'entity',
+    'entities',
+    'id',
+    'idref',
+    'idrefs',
+    'language',
+    'name',
+    'ncname',
+    'nmtoken',
+    'nmtokens',
+    'qname',
+    'notation'
+  );
 
 type
   TXmlVerySimpleAcces = class(TXmlVerySimple);
@@ -291,20 +361,40 @@ function LoadXSDImport(const URI: String): String;
 var
   zlib: TIdCompressorZLib;
   http: TIdHTTP;
+  ssl: TIdSSLIOHandlerSocketOpenSSL;
   reader: TStreamReader;
+  output: TStringStream;
 begin
   try
     if StartsStr('http', URI) then begin
+      ssl:=Nil;
+      if StartsStr('https', URI) then
+        ssl:=TIdSSLIOHandlerSocketOpenSSL.Create(Nil);
       zlib:=TIdCompressorZLib.Create(Nil);
+      output:=TStringStream.Create('', TEncoding.UTF8);
+      //
       http:=TIdHTTP.Create(Nil);
       try
+        http.Request.AcceptCharSet:='UTF-8';
+        http.Request.CharSet:='UTF-8';
+        http.Request.ContentEncoding:='UTF-8';
         http.HandleRedirects:=True;
+        if ssl <> Nil then
+          http.IOHandler:=ssl;
         http.Compressor:=zlib;
-        Result:=http.Get(URI);
+        //
+        http.Get(URI, output);
+        output.Position:=0;
+        Result:=output.DataString;
       finally
+        output.Free;
         http.Compressor:=Nil;
-        http.Free;
         zlib.Free;
+        if ssl <> Nil then begin
+          http.IOHandler:=Nil;
+          ssl.Free;
+        end;
+        http.Free;
       end;
     end
     else if (URI <> '') and FileExists(URI) then begin
@@ -324,10 +414,10 @@ begin
   end;
 end;
 
-function MakeXSDImport(const Node: TXmlNode): TXSDImport; overload;
+function MakeXSDImport(const Node: TXmlNode; const Path: String): TXSDImport;
 var
   Import: TXSDImport;
-  path: String;
+  LPath: String;
   xsd: WideString;
 begin
   Import:=TXSDImport.Create;
@@ -339,13 +429,17 @@ begin
     Import.SchemaLocation:=Node.Attributes['schemaLocation'];
 
   try
-    path:=Import.SchemaLocation;
-    if ExtractURLFullPath(path) = '' then
-      path:=ExtractURLFullPath(Import.Namespace) + path;
+    LPath:=Import.SchemaLocation;
+    if ExtractURLFullPath(LPath) = '' then begin
+      if FileExists(Path + LPath) then
+        LPath:=Path + LPath
+      else
+        LPath:=ExtractURLFullPath(Import.Namespace) + LPath;
+    end;
 
-    xsd:=LoadXSDImport(path);
+    xsd:=LoadXSDImport(LPath);
     if xsd <> '' then
-      Import.Add(xsd)
+      Import.Add(Path, xsd)
     else begin
       raise ENodeException.Create('Import must not be empty!');
     end;
@@ -460,55 +554,66 @@ begin
   if Assigned(FImport) then
     FImport.Free;
 
+  FPath:='';
   FXSDImports.Free;
   inherited;
 end;
 
 procedure TXSDImport.ParseImport;
+var
+  includes_added: Boolean;
 begin
-  FImport.DocumentElement.ScanNodes('import',
-    function (Node: TXmlNode): Boolean // import includes
+  includes_added:=False;
+  FImport.DocumentElement.ScanNodes('',
+    function (Node: TXmlNode): Boolean // imports and includes
     var
       Import: TXSDImport;
-    begin
-      Result:=True;
-      Import:=MakeXSDImport(Node);
-      if Import <> Nil then
-        FXSDImports.Add(Import);
-    end, True);
-  FImport.DocumentElement.ScanNodes('include',
-    function (Node: TXmlNode): Boolean // import includes
-    var
       schema_Location, uri_path: String;
       xsd_include: TXmlVerySimple;
     begin
-      Result:=True;
-      if Node.HasAttribute('schemaLocation') then begin
-        schema_Location:=Node.Attributes['schemaLocation'];
-        uri_path:=ExtractURLPath(schema_Location);
-        if uri_path = '' then
-          uri_path:=ExtractURLPath(SchemaLocation);
-        xsd_include:=TXmlVerySimple.Create;
-        try
-          xsd_include.Xml:=LoadXSDImport(uri_path + ExtractURLFileName(schema_Location));
-          FImport.DocumentElement.AddNodes(xsd_include.DocumentElement);
-        finally
-          xsd_include.Free;
+      if Node.Name = 'import' then begin
+        Result:=True;
+        Import:=MakeXSDImport(Node, FPath);
+        if Import <> Nil then
+          FXSDImports.Add(Import);
+      end
+      else if Node.Name = 'include' then begin
+        Result:=True;
+        if Node.HasAttribute('schemaLocation') then begin
+          schema_Location:=Node.Attributes['schemaLocation'];
+          uri_path:=ExtractURLPath(schema_Location);
+          if uri_path = '' then begin
+            if FileExists(FPath + schema_Location) then
+              uri_path:=FPath
+            else
+              uri_path:=ExtractURLPath(SchemaLocation);
+          end;
+          xsd_include:=TXmlVerySimple.Create;
+          try
+            xsd_include.Options:=[doNodeAutoIndent];
+            xsd_include.Xml:=LoadXSDImport(uri_path + ExtractURLFileName(schema_Location));
+            FImport.DocumentElement.AddNodes(xsd_include.DocumentElement);
+            includes_added:=True;
+          finally
+            xsd_include.Free;
+          end;
         end;
-      end;
+      end
+      else
+        Result:=includes_added;
     end, True);
 end;
 
-function TXSDImport.Add(const Value: String): TXSDImport;
+function TXSDImport.Add(const Path, Value: String): TXSDImport;
 begin
+  Result:=Self;
   if not Assigned(FImport) then
     FImport:=TXmlVerySimple.Create;
 
-  FImport.Xml := Value;
+  FPath:=Path;
+  FImport.Xml:=Value;
 
   ParseImport;
-
-  Result:=Self;
 end;
 
 { TXSDImportList }
@@ -567,13 +672,313 @@ begin
       if found <> Nil then begin
         Result := found;
         Break;
-      end;  
+      end;
     end;
 end;
 
 function TXSDImportList.HasImport(const ANamespace: String): Boolean;
 begin
   Result := Assigned(Find(ANamespace));
+end;
+
+{ THashedStringList }
+
+function HashStringInsensitive(Value: String): LongWord;
+var
+  Index: Integer;
+begin
+  Value:=AnsiUpperCase(Value);
+  Result:=0;
+  for Index:=1 to Length(Value) do
+    Result:=((Result shl 7) or (Result shr 25)) + Ord(Value[Index]);
+  Value:='';
+end;
+
+function HashStringSensitive(const Value: String): LongWord;
+var
+  Index: Integer;
+begin
+  Result:=0;
+  for Index:=1 to Length(Value) do
+    Result:=((Result shl 7) or (Result shr 25)) + Ord(Value[Index]);
+end;
+
+constructor THashedStringList.Create;
+begin
+  Create(True, False);
+end;
+
+constructor THashedStringList.Create(const CaseSensitive: Boolean);
+begin
+  Create(CaseSensitive, False);
+end;
+
+constructor THashedStringList.Create(const CaseSensitive, OwnsObjects: Boolean);
+begin
+  inherited Create;
+  FList:=TList.Create;
+  FCaseSensitive:=CaseSensitive;
+  FOwnsObjects:=OwnsObjects;
+end;
+
+destructor THashedStringList.Destroy;
+begin
+  Clear;
+  FList.Free;
+  inherited;
+end;
+
+function THashedStringList.Add(const S, Value: String): Integer;
+var
+  Data: PStringRec;
+begin
+  New(Data);
+  New(Data.Name);
+  New(Data.Value);
+  Data.Name.Value:=S;
+  if CaseSensitive then
+    Data.Name.Hash{Sensitive}:=HashStringSensitive(S)
+  else
+    Data.Name.Hash{Insensitive}:=HashStringInsensitive(S);
+  Data.Value.Value:=Value;
+  if CaseSensitive then
+    Data.Value.Hash{Sensitive}:=HashStringSensitive(Value)
+  else
+    Data.Value.Hash{Insensitive}:=HashStringInsensitive(Value);
+  Result:=FList.Add(Data);
+end;
+
+function THashedStringList.AddObject(const S: String; const AObject1, AObject2: TObject): Integer;
+var
+  Data: PStringRec;
+begin
+  Result:=Add(S);
+  Data:=FList[Result];
+  Data.ObjectRef1:=AObject1;
+  Data.ObjectRef2:=AObject2;
+end;
+
+procedure THashedStringList.Clear;
+var
+  Index: Integer;
+  StringData: PStringRec;
+begin
+  for Index:=FList.Count-1 downto 0 do
+    Delete(Index);
+end;
+
+function THashedStringList.Count: Integer;
+begin
+  Result:=FList.Count;
+end;
+
+procedure THashedStringList.Delete(Index: Integer; const ForceFreeObject: Boolean);
+var
+  Data: PStringRec;
+  Obj: TObject;
+begin
+  Data:=FList[Index];
+  if ForceFreeObject then begin
+    Obj:=Data.ObjectRef1;
+    if Obj <> Nil then
+      Obj.Free;
+    Data.ObjectRef1:=Nil;
+    //
+    Obj:=Data.ObjectRef2;
+    if Obj <> Nil then
+      Obj.Free;
+    Data.ObjectRef2:=Nil;
+  end;
+  Dispose(Data.Name);
+  Dispose(Data.Value);
+  Dispose(Data);
+  FList.Delete(Index);
+end;
+
+procedure THashedStringList.Exchange(Index1, Index2: Integer);
+var
+  Item1: PStringRec;
+  Item2: PStringRec;
+begin
+  Item1:=FList[Index1];
+  Item2:=FList[Index2];
+  FList[Index1]:=Item2;
+  FList[Index2]:=Item1;
+end;
+
+function THashedStringList.GetItem(Index: Integer): PStringRec;
+begin
+  Result:=FList[Index];
+end;
+
+function THashedStringList.GetText(Index: Integer): String;
+begin
+  Result:=PStringRec(FList[Index]).Name.Value;
+end;
+
+function THashedStringList.GetObject(Index: Integer; ObjIndex: TObjectIndex): TObject;
+begin
+  Result:=Nil;
+  case ObjIndex of
+    1: Result:=PStringRec(FList[Index]).ObjectRef1;
+    2: Result:=PStringRec(FList[Index]).ObjectRef2;
+  end;
+end;
+
+function THashedStringList.GetValue(Name: String): String;
+var
+  Index: Integer;
+begin
+  Result:=EmptyStr;
+  if StringExists(Name, Index) then
+    Result:=PStringRec(FList[Index]).Value.Value;
+end;
+
+function THashedStringList.IndexOfName(const S: String): Integer;
+begin
+  StringExists(S, Result);
+end;
+
+function THashedStringList.IndexOfValue(const S: String): Integer;
+begin
+  ValueExists(S, Result);
+end;
+
+procedure THashedStringList.Insert(Index: Integer; const S, Value: String);
+begin
+  Add(S, Value);
+  Exchange(Index, FList.Count - 1);
+end;
+
+procedure THashedStringList.Insert(Index: Integer; const S: String; const AObject1, AObject2: TObject);
+begin
+  AddObject(S, AObject1, AObject2);
+  Exchange(Index, FList.Count - 1);
+end;
+
+procedure THashedStringList.SetItem(Index: Integer; const Value: PStringRec);
+var
+  Data: PStringRec;
+begin
+  Data:=FList[Index];
+  if OwnsObjects and ((Data.ObjectRef1 <> Nil) or (Data.ObjectRef2 <> Nil)) then begin
+    if Data.ObjectRef1 <> Nil then
+      Data.ObjectRef1.Free;
+    if Data.ObjectRef2 <> Nil then
+      Data.ObjectRef2.Free;
+  end;
+  Data.ObjectRef1:=Nil;
+  Data.ObjectRef2:=Nil;
+  Dispose(Data.Name);
+  Dispose(Data.Value);
+  Dispose(Data);
+  FList[Index]:=Value;
+end;
+
+procedure THashedStringList.SetText(Index: Integer; const Value: String);
+var
+  Data: PStringRec;
+begin
+  Data:=FList[Index];
+  Data.Name.Value:=Value;
+  if CaseSensitive then
+    Data.Name.Hash{Sensitive}:=HashStringSensitive(Value)
+  else
+    Data.Name.Hash{Insensitive}:=HashStringInsensitive(Value);
+end;
+
+procedure THashedStringList.SetObject(Index: Integer; ObjIndex: TObjectIndex; const Value: TObject);
+var
+  Data: PStringRec;
+begin
+  Data:=FList[Index];
+  case ObjIndex of
+    1: Data.ObjectRef1:=Value;
+    2: Data.ObjectRef2:=Value;
+  end;
+end;
+
+procedure THashedStringList.SetValue(Name: String; const Value: String);
+var
+  Index: Integer;
+  Data: PStringRec;
+begin
+  if StringExists(Name, Index) then begin
+    Data:=FList[Index];
+    Data.Value.Value:=Value;
+    if CaseSensitive then
+      Data.Value.Hash{Sensitive}:=HashStringSensitive(Value)
+    else
+      Data.Value.Hash{Insensitive}:=HashStringInsensitive(Value);
+  end;
+end;
+
+function THashedStringList.StringExists(const S: String): Boolean;
+var
+  Index: Integer;
+begin
+  Result:=StringExists(S, Index);
+end;
+
+function THashedStringList.StringExists(const S: String; var atIndex: Integer): Boolean;
+var
+  Index: Integer;
+  Hash: LongWord;
+begin
+  Result:=False;
+  atIndex:=-1;
+  if CaseSensitive then begin
+    Hash:=HashStringSensitive(S);
+    for Index:=0 to FList.Count - 1 do
+      if PStringRec(FList[Index]).Name.Hash{Sensitive} = Hash then begin
+        atIndex:=Index;
+        Result:=True;
+        Exit;
+      end;
+  end
+  else begin
+    Hash:=HashStringInsensitive(S);
+    for Index:=0 to FList.Count - 1 do
+      if PStringRec(FList[Index]).Name.Hash{Insensitive} = Hash then begin
+        atIndex:=Index;
+        Result:=True;
+        Exit;
+      end;
+  end;
+end;
+
+function THashedStringList.ValueExists(const S: String): Boolean;
+var
+  Index: Integer;
+begin
+  Result:=ValueExists(S, Index);
+end;
+
+function THashedStringList.ValueExists(const S: String; var atIndex: Integer): Boolean;
+var
+  Index: Integer;
+  Hash: LongWord;
+begin
+  Result:=False;
+  atIndex:=-1;
+  if CaseSensitive then begin
+    Hash:=HashStringSensitive(S);
+    for Index:=0 to FList.Count - 1 do
+      if PStringRec(FList[Index]).Value.Hash{Sensitive} = Hash then begin
+        atIndex:=Index;
+        Result:=True;
+        Exit;
+      end;
+  end
+  else begin
+    Hash:=HashStringInsensitive(S);
+    for Index:=0 to FList.Count - 1 do
+      if PStringRec(FList[Index]).Value.Hash{Insensitive} = Hash then begin
+        atIndex:=Index;
+        Result:=True;
+        Exit;
+      end;
+  end;
 end;
 
 { TXSD2XMLParser }
@@ -588,6 +993,7 @@ begin
   FXML.LineBreak:='';
   FXML.NodeIndentStr:='';
   FLastXSDImportsSearchRoot:=Nil;
+  FParsedTypes:=THashedStringList.Create(True, False);
   FSchemaPrefix:='';
   FSchemaNamespace:='';
   FSchemaTargetNamespace:='';
@@ -598,6 +1004,8 @@ end;
 
 destructor TXSD2XMLParser.Destroy;
 begin
+  FAbsolutePath:='';
+  FParsedTypes.Free;
   if Assigned(FXSD) then
     FXSD.Free;
   FXSDImports.Free;
@@ -664,16 +1072,20 @@ begin
     ReferenceName:=Node.Attributes['ref'];
 end;
 
-function TXSD2XMLParser.IsSimpleType(const Node: TXmlNode): Boolean;
+function TXSD2XMLParser.IsSimpleType(const Node: TXmlNode; out Child: TXmlNode): Boolean;
+var
+  TempNode: TXmlNode;
 begin
   Result:=False;
-  if (not Node.HasAttribute('type') and not IsComplexType(Node)) or (Node.FindNode('simpleType', [ntElement], [nsSearchWithoutPrefix]) <> Nil) then
+  Child:=Node.FindNode('simpleType', [ntElement], [nsSearchWithoutPrefix]);
+  if (not Node.HasAttribute('type') and not IsComplexType(Node, TempNode)) or (Child <> Nil) then
     Result:=True;
 end;
 
-function TXSD2XMLParser.IsComplexType(const Node: TXmlNode): Boolean;
+function TXSD2XMLParser.IsComplexType(const Node: TXmlNode; out Child: TXmlNode): Boolean;
 begin
-  Result:=(Node.FindNode('complexType', [ntElement], [nsSearchWithoutPrefix]) <> Nil);
+  Child:=Node.FindNode('complexType', [ntElement], [nsSearchWithoutPrefix]);
+  Result:=(Child <> Nil);
 end;
 
 function TXSD2XMLParser.IsTypeDeclared(const Node: TXmlNode; var TypeDeclared: String): Boolean;
@@ -984,6 +1396,7 @@ class function TXSD2XMLParser.LoadFromFile(const FileName: String; const BufferS
 begin
   Result:=TXSD2XMLParser.Create;
   Result.FXSD.LoadFromFile(FileName, BufferSize);
+  Result.FAbsolutePath:=ExtractFilePath(FileName);
   Result.Parse;
 end;
 
@@ -1052,7 +1465,7 @@ procedure TXSD2XMLParser.ParseImport(const Node: TXmlNode; var Parent: TXmlNode)
 var
   Import: TXSDImport;
 begin
-  Import:=MakeXSDImport(Node);
+  Import:=MakeXSDImport(Node, FAbsolutePath);
   if Import <> Nil then
     FXSDImports.Add(Import);
 end;
@@ -1077,22 +1490,22 @@ begin
         end;
       end;
       //
-      if IsSimpleType(Node) then begin
+      if IsTypeDeclared(Node, NodeType) then begin // check if it is referenced by type declaration
         Parent:=Add(Node, Parent, '', True, Optional);
-        Child:=Node.FindNode('simpleType', [ntElement], [nsRecursive]); // recursive
+        ParseTypeReference(Node, Parent, NodeType);
+        Parent:=Parent.ParentNode;
+      end
+      else if IsSimpleType(Node, Child) then begin
+        Parent:=Add(Node, Parent, '', True, Optional);
+        //Child:=Node.FindNode('simpleType', [ntElement], [nsRecursive]); // recursive
         if Child = Nil then
           Child:=Node;
         ParseSimpleType(Child, Parent);
         Parent:=Parent.ParentNode;
       end
-      else if IsTypeDeclared(Node, NodeType) then begin // check if it is referenced by type declaration
+      else if IsComplexType(Node, Child) then begin // complex type
         Parent:=Add(Node, Parent, '', True, Optional);
-        ParseTypeReference(Node, Parent, NodeType);
-        Parent:=Parent.ParentNode;
-      end
-      else if IsComplexType(Node) then begin // complex type
-        Parent:=Add(Node, Parent, '', True, Optional);
-        Child:=Node.FindNode('complexType', [ntElement], [nsRecursive]); // recursive
+        //Child:=Node.FindNode('complexType', [ntElement], [nsRecursive]); // recursive
         if Child <> Nil then
           ParseComplexType(Child, Parent);
         Parent:=Parent.ParentNode;
@@ -1321,18 +1734,25 @@ end;
 
 procedure TXSD2XMLParser.ParseTypeReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
 
-  function CheckCircularTypeReference(const CheckNode: TXmlNode): Boolean;
+  function CheckCircularTypeReferenceResolved(const CheckNode: TXmlNode): Boolean;
   var
     refPrefix, refName: String;
+    has_resolved: Boolean;
+    resolved: Boolean;
   begin
     Result:=True;
     // detect circular type reference
     if Node.HasAttribute('base') then
       TXmlNode.GetNameAndPrefix(Node.Attributes['base'], refName, refPrefix);
-    if not CheckNode.HasAttribute('resolved') then
+    has_resolved:=CheckNode.HasAttribute('resolved');
+    resolved:=False;
+    if has_resolved then
+      resolved:=(CheckNode.Attributes['resolved'] = 'true');
+    if not has_resolved then
       Result:=False
-    else if CheckNode.HasAttribute('resolved') and (CheckNode.Attributes['resolved'] = 'true') and
-            (Node.HasAttribute('name') and Node.HasAttribute('type') and (Parent.Name = Node.Attributes['name']) and Parent.HasAttribute('type') and (Parent.Attributes['type'] = Node.Attributes['type'])) or
+    else if has_resolved and resolved and
+            (Node.HasAttribute('name') and Node.HasAttribute('type') and
+             (Parent.Name = Node.Attributes['name']) and Parent.HasAttribute('type') and (Parent.Attributes['type'] = Node.Attributes['type'])) or
             (Node.HasAttribute('base') and CheckNode.HasAttribute('name') and (refName = CheckNode.Attributes['name'])) then
       Result:=False
     else begin
@@ -1346,8 +1766,8 @@ procedure TXSD2XMLParser.ParseTypeReference(const Node: TXmlNode; var Parent: TX
 
 var
   refPrefix, refName, attrValue: String;
-//  i: Integer;
-  SearchRoot, SearchNode: TXmlNode;
+  i: Integer;
+  SearchRoot, SearchNode, TypedNode: TXmlNode;
   attr: TXmlAttribute;
   XSDImport: TXSDImport;
 begin
@@ -1386,19 +1806,38 @@ begin
     end;
   end;
 
-  SearchNode:=SearchRoot.FindNode{Recursive}('simpleType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
-  if SearchNode <> Nil then begin
-    if not CheckCircularTypeReference(SearchNode) then
-      ParseSimpleType(SearchNode, Parent);
+  i:=FParsedTypes.IndexOfName(ReferenceName);
+  if i > -1 then begin
+//    SearchNode:=TXmlNode(FParsedTypes.Objects[i, 1]);
+//    if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+      SearchNode:=TXmlNode(FParsedTypes.Objects[i, 2]);
+      Parent.AddNodes(SearchNode);
+//    end;
   end
   else begin
-    SearchNode:=SearchRoot.FindNode{Recursive}('complexType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
+    if SearchRoot = Nil then
+      raise ENodeException.CreateFmt('Searching for type reference with empty list!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+
+    SearchNode:=SearchRoot.FindNode{Recursive}('simpleType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
     if SearchNode <> Nil then begin
-      if not CheckCircularTypeReference(SearchNode) then
-        ParseComplexType(SearchNode, Parent);
+      if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+        ParseSimpleType(SearchNode, Parent);
+        TypedNode:=TXmlNode.Create(Parent);
+        FParsedTypes.AddObject(ReferenceName, SearchNode, TypedNode);
+      end;
     end
     else begin
-      raise ENodeException.CreateFmt('Type reference not found!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+      SearchNode:=SearchRoot.FindNode{Recursive}('complexType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
+      if SearchNode <> Nil then begin
+        if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+          ParseComplexType(SearchNode, Parent);
+          TypedNode:=TXmlNode.Create(Parent);
+          FParsedTypes.AddObject(ReferenceName, SearchNode, TypedNode);
+        end;
+      end
+      else begin
+        raise ENodeException.CreateFmt('Type reference not found!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+      end;
     end;
   end;
 
