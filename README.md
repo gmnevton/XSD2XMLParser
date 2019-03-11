@@ -1,6 +1,6 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.16.0
+    XSD to XML Parser v.17.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
@@ -31,4 +31,7 @@
       v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
       v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
       v.16 - 2019.01.17 - GM - do not skip 'annotation' for element nodes, just resolve them if xsdParseAnnotations is in Options; replace ChildNodes.First by FirstChild
+      v.17 - 2019.02.15 - GM - speedup conversion; added custom THashedStringList to hold parsed types; some minor fixes with regard to speedup
+           + 2019.02.27 - GM - fixed MakeXSDImport to properly load shemas from local hard drive
+           + 2019.03.10 - GM - added SSL/TLS support for schema downloading rutine; forced HTTP request to retrun UTF-8 encoded data
       
