@@ -48,6 +48,8 @@ type
     procedure vstXMLTreeCreateEditor(Sender: TBaseVirtualTree; Node: PVirtualNode; Column: TColumnIndex; out EditLink: IVTEditLink);
     procedure vstXMLTreeEditCancelled(Sender: TBaseVirtualTree; Column: TColumnIndex);
     procedure vstXMLTreeEdited(Sender: TBaseVirtualTree; Node: PVirtualNode; Column: TColumnIndex);
+    procedure vstXSDSchemaTreeFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
+    procedure vstXMLTreeFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
   private
     XSDSchema: TXMLVerySimple;
     XSD2XMLParser: TXSD2XMLParser;
@@ -146,6 +148,10 @@ begin
     XSD2XMLParser:=TXSD2XMLParser.LoadFromFile(OpenDialog1.FileName);
     PerformanceTimer.Stop;
     parse_time:=PerformanceTimer.ElapsedMiliseconds;
+    XSD2XMLParser.XML.LineBreak:=#13#10;
+    XSD2XMLParser.XML.NodeIndentStr:='    ';
+    XSD2XMLParser.XML.NodeAutoIndent:=True;
+    XSD2XMLParser.XML.SaveToFile(ChangeFileExt(OpenDialog1.FileName, '.xml'));
     vstXMLTree.BeginUpdate;
     try
       vstXMLTree.Clear;
@@ -260,6 +266,14 @@ begin
   end;
 end;
 
+procedure TForm1.vstXSDSchemaTreeFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
+var
+  NodeData: PXMLTreeNode;
+begin
+  NodeData:=Sender.GetNodeData(Node);
+  NodeData.XMLNode:=Nil;
+end;
+
 procedure TForm1.vstXSDSchemaTreeGetNodeDataSize(Sender: TBaseVirtualTree; var NodeDataSize: Integer);
 begin
   NodeDataSize:=TreeNodeDataSize;
@@ -317,11 +331,11 @@ begin
 end;
 
 procedure TForm1.vstXMLTreeCreateEditor(Sender: TBaseVirtualTree; Node: PVirtualNode; Column: TColumnIndex; out EditLink: IVTEditLink);
-var
-  NodeData: PXMLTreeNode;
+//var
+//  NodeData: PXMLTreeNode;
 begin
   if Node <> Nil then begin
-    NodeData:=Sender.GetNodeData(Node);
+//    NodeData:=Sender.GetNodeData(Node);
     EditLink:=TStringEditLink.Create;
 //    if NodeData.XMLNode.HasAttribute('info') then
 //      TStringEditLink(EditLink).Edit.Text:=NodeData.XMLNode.Attributes['info'];
@@ -338,6 +352,14 @@ procedure TForm1.vstXMLTreeEdited(Sender: TBaseVirtualTree; Node: PVirtualNode; 
 begin
   TVirtualStringTree(Sender).TreeOptions.StringOptions:=[toShowStaticText];
   Sender.Invalidate;
+end;
+
+procedure TForm1.vstXMLTreeFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
+var
+  NodeData: PXMLTreeNode;
+begin
+  NodeData:=Sender.GetNodeData(Node);
+  NodeData.XMLNode:=Nil;
 end;
 
 procedure TForm1.vstXMLTreeGetNodeDataSize(Sender: TBaseVirtualTree; var NodeDataSize: Integer);
@@ -369,10 +391,10 @@ begin
 end;
 
 procedure TForm1.vstXMLTreePaintText(Sender: TBaseVirtualTree; const TargetCanvas: TCanvas; Node: PVirtualNode; Column: TColumnIndex; TextType: TVSTTextType);
-var
-  NodeData: PXMLTreeNode;
+//var
+//  NodeData: PXMLTreeNode;
 begin
-  NodeData:=Sender.GetNodeData(Node);
+//  NodeData:=Sender.GetNodeData(Node);
   if TextType = ttStatic then
     TargetCanvas.Font.Color:=clGrayText;
 end;

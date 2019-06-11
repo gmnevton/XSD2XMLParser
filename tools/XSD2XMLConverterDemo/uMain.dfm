@@ -137,6 +137,7 @@ object Form1: TForm1
       TreeOptions.PaintOptions = [toShowButtons, toShowRoot, toShowTreeLines, toThemeAware, toUseBlendedImages]
       TreeOptions.SelectionOptions = [toExtendedFocus]
       TreeOptions.StringOptions = [toShowStaticText]
+      OnFreeNode = vstXSDSchemaTreeFreeNode
       OnGetText = vstXSDSchemaTreeGetText
       OnPaintText = vstXSDSchemaTreePaintText
       OnGetNodeDataSize = vstXSDSchemaTreeGetNodeDataSize
@@ -183,6 +184,7 @@ object Form1: TForm1
       OnCreateEditor = vstXMLTreeCreateEditor
       OnEditCancelled = vstXMLTreeEditCancelled
       OnEdited = vstXMLTreeEdited
+      OnFreeNode = vstXMLTreeFreeNode
       OnGetText = vstXMLTreeGetText
       OnPaintText = vstXMLTreePaintText
       OnGetNodeDataSize = vstXMLTreeGetNodeDataSize
