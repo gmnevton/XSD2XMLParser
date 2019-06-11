@@ -4,7 +4,7 @@
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
-    contains only default or fixed values for nodes and attributes.
+      contains only default or fixed values for nodes and attributes.
 
     Author:
       (C) 2015-2019, Grzegorz Molenda; gmnevton@o2.pl
