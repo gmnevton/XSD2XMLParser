@@ -1,6 +1,6 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.17.0
+    XSD to XML Parser v.18.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
