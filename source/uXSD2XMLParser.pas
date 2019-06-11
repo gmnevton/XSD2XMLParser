@@ -1,5 +1,5 @@
 {
-  XSD to XML Parser v.17.0
+  XSD to XML Parser v.18.0
 
   Reads XSD schema and outputs XML structure described by schema,
     contains only default or fixed values for nodes and attributes.
@@ -32,6 +32,11 @@
     v.17 - 2019.02.15 - GM - speedup conversion; added custom THashedStringList to hold parsed types; some minor fixes with regard to speedup
          + 2019.02.27 - GM - fixed MakeXSDImport to properly load shemas from local hard drive
          + 2019.03.10 - GM - added SSL/TLS support for schema downloading rutine; forced HTTP request to retrun UTF-8 encoded data
+    v.18 - 2019.05.13 - GM - added "attributeGroup" parsing; moved parsing procedures to protected section and virtualized them; changed ENodeException to EXSDParseException
+         +            - GM - added EXSDImportException; added error description constant strings; changed GetPascalType return values to better matching Pascal language
+         + 2019.06.07 - GM - added EXSD2XMLParserException parent class; added ParseAttributeTypeReference and ParseAttributeValue
+         +            - GM - fixed THashedStringList.Delete to automatically free owned objects; fixed destructor TXSD2XMLParser.Destroy to free runtime created objects (patched memory leak)
+         +            - GM - speedup by fixing function TXSD2XMLParser.HasReference to detect if type is declared; changed procedure TXSD2XMLParser.ParseAttribute
 }
 
 unit uXSD2XMLParser;
@@ -47,7 +52,9 @@ uses
   uGMUtils;
 
 type
-  ENodeException = class(Exception);
+  EXSD2XMLParserException = class(Exception);
+  EXSDParseException = class(EXSD2XMLParserException);
+  EXSDImportException = class(EXSD2XMLParserException);
 
   TXSDOption = (xsdNodeAutoIndent, xsdCompact, xsdParseProcessingInstr, xsdParseImportInstr, xsdPreserveWhiteSpace,
                 xsdCaseInsensitive, xsdSearchAutoIncludeNamespacePrefix, xsdWriteBOM, xsdParseAnnotations);
@@ -101,6 +108,7 @@ type
 
   TXSDSimpleType = (stUnknown, stRestriction, stList, stUnion);
   TXSDComplexType = (ctUnknown, ctAll, ctChoice, ctSequence, ctSimpleContent, ctComplexContent, ctElement);
+  TXSDReferencedNode = (rnUnknown, rnElement, rnAttributeGroup);
 
   TNodeInfo = class
   public
@@ -220,12 +228,23 @@ type
     FIncludePrefix: Boolean;
     FIncludePrefixString: TStringArray;
     FAbsolutePath: String;
+  private const
+    ESchemaNotLoaded = 'XSD schema not loaded!';
+    EUnknownNode = 'Unknown node!';
+    ENodeNotSupported = 'Node not supported!';
+    ENodeWithoutName = 'Node does not have a name!';
+    ERestrictionBaseTypeNeeded = 'Restriction must have base type!';
+    EExtensionBaseTypeNeeded = 'Extension must have base type!';
+    ECircularTypeReference = 'Circular type reference!';
+    EReferenceListEmpty = 'Searching for type reference with empty list!';
+    ETypeReferenceNotFound = 'Type reference not found!';
+    EReferenceNotFound = 'Reference not found!';
   protected
     function GetXMLString: String;
     function IsSame(const Value1, Value2: String): Boolean;
     function GetPrefix: String;
 
-    function HasReference(const Node: TXmlNode): Boolean; virtual;
+    function HasReference(const Node: TXmlNode; const NodeType: TXSDReferencedNode): Boolean; virtual;
 
     function IsReferenced(const Node: TXmlNode; var ReferenceName: String): Boolean; virtual;
     function IsSimpleType(const Node: TXmlNode; out Child: TXmlNode): Boolean; virtual;
@@ -239,12 +258,37 @@ type
     function IsMixed(const Node: TXmlNode): Boolean; virtual; // text and child elements inside
     function IsBuiltinSkipableElement(const Node: TXmlNode; const IncludeExtended: Boolean = False): Boolean; virtual;
     class function IsBuiltinAttr(const AttributeName: String; const IncludeExtended: Boolean = False): Boolean; virtual;
-    function IsPascalType(const TypeName: String): Boolean;
+    function IsPascalType(const TypeName: String): Boolean; virtual;
 
-    function GetXSDBuiltinType(const ElementTypeName: String): TXSDElementType;
+    function GetXSDBuiltinType(const ElementTypeName: String): TXSDElementType; virtual;
     function GetSimpleType(var Node: TXmlNode): TXSDSimpleType; virtual;
     function GetComplexType(var Node: TXmlNode): TXSDComplexType; virtual;
     function GetPascalType(const TypeName: String): String; virtual;
+
+    procedure ParseSchemaAttributes(const Node: TXmlNode); virtual;
+    procedure ParseImport(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseElement(const Node: TXmlNode; var Parent: TXmlNode; const Recursive: Boolean = False; const Optional: Boolean = False); virtual;
+    procedure ParseAnnotation(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseSimpleType(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseComplexType(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseRestriction(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseExtension(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseTypeReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String); virtual;
+    procedure ParseAttributeTypeReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String); virtual;
+    procedure ParseReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String); virtual;
+    procedure ParseValue(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseAttribute(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseAttributeGroup(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseAttributeGroupReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String); virtual;
+    procedure ParseAttributeValue(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String); virtual;
+    procedure ParseEnumeration(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseList(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseUnion(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseChoice(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseGroup(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseSequence(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseBuiltinAttr(const Node: TXmlNode; var Parent: TXmlNode); virtual;
+    procedure ParseError(const Message: String; const Node: TXmlNode); virtual;
 
     function Add(const Node, Parent: TXmlNode; const Name: String = ''; const CheckOptional: Boolean = True; const SetOptional: Boolean = False): TXmlNode;
   public
@@ -257,25 +301,6 @@ type
 
     procedure Clear; virtual;
     procedure Parse; virtual;
-    procedure ParseSchemaAttributes(const Node: TXmlNode);
-    procedure ParseImport(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseElement(const Node: TXmlNode; var Parent: TXmlNode; const Recursive: Boolean = False; const Optional: Boolean = False);
-    procedure ParseAnnotation(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseSimpleType(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseComplexType(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseRestriction(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseExtension(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseTypeReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
-    procedure ParseReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
-    procedure ParseValue(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseAttribute(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseEnumeration(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseList(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseUnion(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseChoice(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseGroup(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseSequence(const Node: TXmlNode; var Parent: TXmlNode);
-    procedure ParseBuiltinAttr(const Node: TXmlNode; var Parent: TXmlNode);
 
     property XSD: TXmlVerySimple read FXSD;
     property XML: TXmlVerySimple read FXML;
@@ -406,7 +431,7 @@ begin
       end;
     end
     else begin
-      raise ENodeException.CreateFmt('Import URI not recognized!'#13#10'%s', [URI]);
+      raise EXSDImportException.CreateFmt('Import URI not recognized!'#13#10'%s', [URI]);
     end;
   except
     Result:='';
@@ -441,7 +466,7 @@ begin
     if xsd <> '' then
       Import.Add(Path, xsd)
     else begin
-      raise ENodeException.Create('Import must not be empty!');
+      raise EXSDImportException.Create('Import must not be empty!');
     end;
   except
     Import.Free;
@@ -761,7 +786,7 @@ end;
 procedure THashedStringList.Clear;
 var
   Index: Integer;
-  StringData: PStringRec;
+//  StringData: PStringRec;
 begin
   for Index:=FList.Count-1 downto 0 do
     Delete(Index);
@@ -778,7 +803,7 @@ var
   Obj: TObject;
 begin
   Data:=FList[Index];
-  if ForceFreeObject then begin
+  if FOwnsObjects or ForceFreeObject then begin
     Obj:=Data.ObjectRef1;
     if Obj <> Nil then
       Obj.Free;
@@ -1003,8 +1028,14 @@ begin
 end;
 
 destructor TXSD2XMLParser.Destroy;
+var
+  i: Integer;
 begin
   FAbsolutePath:='';
+  for i:=FParsedTypes.Count - 1 downto 0 do begin
+    FParsedTypes.Objects[i, 2].Free;
+    FParsedTypes.Objects[i, 2]:=Nil;
+  end;
   FParsedTypes.Free;
   if Assigned(FXSD) then
     FXSD.Free;
@@ -1036,20 +1067,20 @@ begin
     Result:=ifString(xsdSearchAutoIncludeNamespacePrefix in Options, FSchemaPrefix + ':');
 end;
 
-function TXSD2XMLParser.HasReference(const Node: TXmlNode): Boolean;
+function TXSD2XMLParser.HasReference(const Node: TXmlNode; const NodeType: TXSDReferencedNode): Boolean;
 var
-  refName: String;
+  refName, typeDecl: String;
   n: TXmlNode;
 begin
   Result:=False;
 
-  if IsReferenced(Node, refName) then
+  if IsReferenced(Node, refName) or IsTypeDeclared(Node, typeDecl) then
     Exit;
 
   if Node.HasAttribute('name') then
     refName:=Node.Attributes['name']
   else begin
-    raise ENodeException.CreateFmt('Node does not have a name!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+    ParseError(ENodeWithoutName, Node);
   end;
 
   if FLastXSDImportsSearchRoot = Nil then begin
@@ -1058,8 +1089,14 @@ begin
   end;
 
   n:=FLastXSDImportsSearchRoot.Last;
-  if n <> Nil then
-    n:=n.FindNode('element', 'ref', refName, [ntElement], [nsRecursive, nsSearchWithoutPrefix]);
+  if n <> Nil then begin
+    case NodeType of
+      rnElement: n:=n.FindNode('element', 'ref', refName, [ntElement], [nsRecursive, nsSearchWithoutPrefix]);
+      rnAttributeGroup: n:=n.FindNode('attributeGroup', 'ref', refName, [ntElement], [nsRecursive, nsSearchWithoutPrefix]);
+    else
+      n:=Nil;
+    end;
+  end;
   if n <> Nil then
     Result:=True;
 end;
@@ -1318,17 +1355,17 @@ begin
     etFloat: Result:='float';
     etDecimal: Result:='decimal';
     etInteger: Result:='integer';
-    etByte: Result:='short';
+    etByte: Result:='byte';
     etInt: Result:='integer';
     etLong: Result:='int64';
     etNegativeInteger: Result:='integer(negative)';
     etNonNegativeInteger: Result:='integer(non-negative)';
     etNonPositiveInteger: Result:='integer(non-positive)';
     etPositiveInteger: Result:='integer(positive)';
-    etShort: Result:='word';
+    etShort: Result:='shortint';
     etUnsignedLong: Result:='int64';
-    etUnsignedInt: Result:='longint';
-    etUnsignedShort: Result:='word';
+    etUnsignedInt: Result:='longword';
+    etUnsignedShort: Result:='byte';
     etUnsignedByte: Result:='byte';
     etBoolean: Result:='boolean';
     etDate: Result:='date';
@@ -1421,8 +1458,9 @@ begin
 
   Parent:=Nil; // the FXML node
   Node:=FXSD.DocumentElement;
-  if Node = Nil then
-    raise ENodeException.Create('XSD schema not loaded!');
+  if Node = Nil then begin
+    ParseError(ESchemaNotLoaded, Nil);
+  end;
 
   ParseSchemaAttributes(Node);
 
@@ -1476,7 +1514,7 @@ var
   ReferenceName, NodeType: String;
 begin
   // check if it is referenced, if it is then skip
-  if Recursive or not HasReference(Node) then begin
+  if Recursive or not HasReference(Node, rnElement) then begin
     if IsReferenced(Node, ReferenceName) then begin // referenced type
       ParseReference(Node, Parent, ReferenceName);
     end
@@ -1523,7 +1561,7 @@ begin
     if IsSame(Child.Name, 'documentation') and (Child.Text <> '') then
       Parent.Attributes['info']:=Child.Text
     else begin
-      raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+      ParseError(EUnknownNode, Child);
     end;
     Child:=Child.NextSibling;
   end;
@@ -1554,7 +1592,7 @@ begin
       // Built in elements that can be skiped - do nothing
     end
     else begin
-      raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+      ParseError(EUnknownNode, Child);
     end;
     Child:=Child.NextSibling;
   end;
@@ -1600,11 +1638,13 @@ begin
         ParseComplexType(Child, Parent)
       else if IsSame(Child.Name, 'attribute') then
         ParseAttribute(Child, Parent)
+      else if IsSame(Child.Name, 'attributeGroup') then
+        ParseAttributeGroup(Child, Parent)
       else if IsBuiltinSkipableElement(Child, True) then begin
         // Built in elements that can be skiped - do nothing
       end
       else begin
-        raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+        ParseError(EUnknownNode, Child);
       end;
       Child:=Child.NextSibling;
     end;
@@ -1647,7 +1687,7 @@ begin
         else if IsSame(Child.Name, 'attribute') then
           ParseAttribute(Child, Parent)
         else begin
-          raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+          ParseError(EUnknownNode, Child);
         end;
         Child:=Child.NextSibling;
       end;
@@ -1665,14 +1705,14 @@ begin
         else if IsBuiltinAttr(Child.Name) then
           ParseBuiltinAttr(Child, Parent)
         else begin
-          raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+          ParseError(EUnknownNode, Child);
         end;
         Child:=Child.NextSibling;
       end;
     end;
   end
   else begin
-    raise ENodeException.CreateFmt('Restriction must have base type!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+    ParseError(ERestrictionBaseTypeNeeded, Node);
   end;
 end;
 
@@ -1707,7 +1747,7 @@ begin
         else if IsSame(Child.Name, 'attribute') then
           ParseAttribute(Child, Parent)
         else begin
-          raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+          ParseError(EUnknownNode, Child);
         end;
         Child:=Child.NextSibling;
       end;
@@ -1721,14 +1761,14 @@ begin
         if IsSame(Child.Name, 'attribute') then
           ParseAttribute(Child, Parent)
         else begin
-          raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+          ParseError(EUnknownNode, Child);
         end;
         Child:=Child.NextSibling;
       end;
     end;
   end
   else begin
-    raise ENodeException.CreateFmt('Extension must have base type!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+    ParseError(EExtensionBaseTypeNeeded, Node);
   end;
 end;
 
@@ -1759,8 +1799,9 @@ procedure TXSD2XMLParser.ParseTypeReference(const Node: TXmlNode; var Parent: TX
       if Node.HasAttribute('minOccurs') and (Node.Attributes['minOccurs'] = '0') and
          Node.HasAttribute('maxOccurs') and (LowerCase(Node.Attributes['maxOccurs']) = 'unbounded') then
         Exit
-      else
-        raise ENodeException.CreateFmt('Circular type reference!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+      else begin
+        ParseError(ECircularTypeReference, Node);
+      end;
     end;
   end;
 
@@ -1815,8 +1856,9 @@ begin
 //    end;
   end
   else begin
-    if SearchRoot = Nil then
-      raise ENodeException.CreateFmt('Searching for type reference with empty list!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+    if SearchRoot = Nil then begin
+      ParseError(EReferenceListEmpty, Node);
+    end;
 
     SearchNode:=SearchRoot.FindNode{Recursive}('simpleType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
     if SearchNode <> Nil then begin
@@ -1836,7 +1878,131 @@ begin
         end;
       end
       else begin
-        raise ENodeException.CreateFmt('Type reference not found!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+        ParseError(ETypeReferenceNotFound, Node);
+      end;
+    end;
+  end;
+
+  if FLastXSDImportsSearchRoot.Count > 1 then begin
+    FLastXSDImportsSearchRoot.Delete(FLastXSDImportsSearchRoot.Count - 1);
+    if Length(FIncludePrefixString) > 1 then
+      FIncludePrefixString:=array_delete(FIncludePrefixString, High(FIncludePrefixString));
+  end;
+
+  if FLastXSDImportsSearchRoot.Count <= 1 then begin
+    FIncludePrefix:=False;
+    SetLength(FIncludePrefixString, 0);
+    array_insert('', FIncludePrefixString);
+  end;
+end;
+
+procedure TXSD2XMLParser.ParseAttributeTypeReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
+
+  function CheckCircularTypeReferenceResolved(const CheckNode: TXmlNode): Boolean;
+  var
+    refPrefix, refName: String;
+    has_resolved: Boolean;
+    resolved: Boolean;
+  begin
+    Result:=True;
+    // detect circular type reference
+    if Node.HasAttribute('base') then
+      TXmlNode.GetNameAndPrefix(Node.Attributes['base'], refName, refPrefix);
+    has_resolved:=CheckNode.HasAttribute('resolved');
+    resolved:=False;
+    if has_resolved then
+      resolved:=(CheckNode.Attributes['resolved'] = 'true');
+    if not has_resolved then
+      Result:=False
+    else if has_resolved and resolved and
+            (Node.HasAttribute('name') and Node.HasAttribute('type') and
+             (Parent.Name = Node.Attributes['name']) and Parent.HasAttribute('type') and (Parent.Attributes['type'] = Node.Attributes['type'])) or
+            (Node.HasAttribute('base') and CheckNode.HasAttribute('name') and (refName = CheckNode.Attributes['name'])) then
+      Result:=False
+    else begin
+      if Node.HasAttribute('minOccurs') and (Node.Attributes['minOccurs'] = '0') and
+         Node.HasAttribute('maxOccurs') and (LowerCase(Node.Attributes['maxOccurs']) = 'unbounded') then
+        Exit
+      else begin
+        ParseError(ECircularTypeReference, Node);
+      end;
+    end;
+  end;
+
+var
+  refPrefix, refName, attrValue: String;
+  i: Integer;
+  SearchRoot, SearchNode, TypedNode: TXmlNode;
+  attr: TXmlAttribute;
+  XSDImport: TXSDImport;
+begin
+  TXmlNode.GetNameAndPrefix(ReferenceName, refName, refPrefix);
+
+  if GetXSDBuiltinType(refName) <> etUnknown then begin
+    ParseAttributeValue(Node, Parent, ReferenceName);
+    Exit;
+  end;
+
+  if FLastXSDImportsSearchRoot = Nil then begin
+    FLastXSDImportsSearchRoot:=TXSDImportsSearchRootList.Create(False);
+    FLastXSDImportsSearchRoot.Add(FXSD.DocumentElement);
+  end;
+
+  SearchRoot:=FLastXSDImportsSearchRoot.Last;
+  if refPrefix <> '' then begin // check imports to search for type reference
+    attr:=SearchRoot.AttributeList.Find('xmlns:' + refPrefix);
+    if attr <> Nil then begin
+      attrValue:=attr.Value;
+      if attrValue <> '' then begin
+        XSDImport:=FXSDImports.Find(attrValue);
+        if (XSDImport <> Nil) and (XSDImport.Import <> Nil) and (XSDImport.Import.DocumentElement <> Nil) then begin
+          if FXML.DocumentElement <> Nil then
+            FXML.DocumentElement.SetAttribute(attr.Name, attr.Value);
+
+          SearchRoot:=XSDImport.Import.DocumentElement;
+          FLastXSDImportsSearchRoot.Add(SearchRoot);
+
+          if FLastXSDImportsSearchRoot.Count > 1 then begin
+            FIncludePrefix:=True;
+            array_insert(refPrefix, FIncludePrefixString);
+          end;
+        end;
+      end;
+    end;
+  end;
+
+  i:=FParsedTypes.IndexOfName(ReferenceName);
+  if i > -1 then begin
+//    SearchNode:=TXmlNode(FParsedTypes.Objects[i, 1]);
+//    if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+      SearchNode:=TXmlNode(FParsedTypes.Objects[i, 2]);
+      Parent.AddNodes(SearchNode);
+//    end;
+  end
+  else begin
+    if SearchRoot = Nil then begin
+      ParseError(EReferenceListEmpty, Node);
+    end;
+
+    SearchNode:=SearchRoot.FindNode{Recursive}('simpleType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
+    if SearchNode <> Nil then begin
+      if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+        ParseSimpleType(SearchNode, Parent);
+        TypedNode:=TXmlNode.Create(Parent);
+        FParsedTypes.AddObject(ReferenceName, SearchNode, TypedNode);
+      end;
+    end
+    else begin
+      SearchNode:=SearchRoot.FindNode{Recursive}('complexType', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
+      if SearchNode <> Nil then begin
+        if not CheckCircularTypeReferenceResolved(SearchNode) then begin
+          ParseComplexType(SearchNode, Parent);
+          TypedNode:=TXmlNode.Create(Parent);
+          FParsedTypes.AddObject(ReferenceName, SearchNode, TypedNode);
+        end;
+      end
+      else begin
+        ParseError(ETypeReferenceNotFound, Node);
       end;
     end;
   end;
@@ -1899,7 +2065,7 @@ begin
   if SearchNode <> Nil then
     ParseElement(SearchNode, Parent, True, IsOptional(Node))
   else begin
-    raise ENodeException.CreateFmt('Reference not found!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+    ParseError(EReferenceNotFound, Node);
   end;
 
   if FLastXSDImportsSearchRoot.Count > 1 then begin
@@ -1931,23 +2097,172 @@ begin
   end;
 end;
 
+procedure TXSD2XMLParser.ParseAttributeValue(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
+var
+  value, attr_name,{ attr_value, attr_prefix,} attr_use: String;
+begin
+  attr_name:=Node.Attributes['name'];
+  attr_use:='';
+  if Node.HasAttribute('use') then
+    attr_use:=Node.Attributes['use'];
+  //
+//  TXmlNode.GetNameAndPrefix(ReferenceName, attr_value, attr_prefix);
+  value:='';
+  if IsFixed(Node, value) then begin
+    if attr_use = 'required' then begin
+      Parent.SetAttribute(attr_name, value);
+    end
+    else if attr_use = 'optional' then begin
+      Parent.SetAttribute('@' + attr_name, value);
+    end;
+  end
+  else if IsDefault(Node, value) then begin
+    if attr_use = 'required' then begin
+      Parent.SetAttribute(attr_name, value);
+    end
+    else if attr_use = 'optional' then begin
+      Parent.SetAttribute('@' + attr_name, value);
+    end;
+  end
+  else begin
+    if attr_use = 'required' then begin
+      Parent.SetAttribute(attr_name, '');
+    end
+    else if attr_use = 'optional' then begin
+      Parent.SetAttribute('@' + attr_name, '');
+    end;
+  end;
+end;
+
 procedure TXSD2XMLParser.ParseAttribute(const Node: TXmlNode; var Parent: TXmlNode);
 var
-  attr_name{, attr_value, attr_prefix}: String;
+  attr_name,{ attr_value, attr_prefix,} attr_use: String;
+  ReferenceName: String;
+//  builtinType: TXSDElementType;
 begin
   // check type of attribute
   attr_name:=Node.Attributes['name'];
-  if Node.HasAttribute('fixed') then
-    Parent.SetAttribute(attr_name, Node.Attributes['fixed'])
-  else if Node.HasAttribute('default') then
-    Parent.SetAttribute(attr_name, Node.Attributes['default']);
-{
-  if Node.HasAttribute('type') then begin
-    attr_value:=Node.Attributes['type'];
-    GetNameAndPrefix(attr_value, attr_value, attr_prefix);
-    Parent.SetAttribute('type', ifString(IsPascalType(attr_value), GetPascalType(attr_value), attr_value));
+  if not IsTypeDeclared(Node, ReferenceName) then begin
+    if Node.HasAttribute('fixed') then
+      Parent.SetAttribute(attr_name, Node.Attributes['fixed'])
+    else if Node.HasAttribute('default') then
+      Parent.SetAttribute(attr_name, Node.Attributes['default']);
+  end
+  else begin
+    attr_use:='';
+    if Node.HasAttribute('use') then
+      attr_use:=Node.Attributes['use'];
+    //TXmlNode.GetNameAndPrefix(ReferenceName, attr_value, attr_prefix);
+    //Parent.SetAttribute('type', ifString(IsPascalType(attr_value), GetPascalType(attr_value), attr_value));
+    if ReferenceName <> '' then begin // find type reference
+      ParseAttributeTypeReference(Node, Parent, ReferenceName);
+      Exit;
+    end;
+    if attr_use = 'required' then begin
+//      Parent.SetAttribute(attr_use, ifString(IsPascalType(attr_value), GetPascalType(attr_value), attr_value));
+      Parent.SetAttribute('required', 'true');
+    end
+    else if attr_use = 'optional' then begin
+//      Parent.SetAttribute('@' + attr_name, ifString(IsPascalType(attr_value), GetPascalType(attr_value), attr_value));
+      Parent.SetAttribute('required', 'optional');
+    end;
   end;
-}
+end;
+
+procedure TXSD2XMLParser.ParseAttributeGroup(const Node: TXmlNode; var Parent: TXmlNode);
+
+  procedure ParseChildren;
+  var
+    Child: TXmlNode;
+  begin
+      Child:=Node;
+      Child:=Child.FirstChild;
+      while Child <> Nil do begin
+        if IsSame(Child.Name, 'attribute') then
+          ParseAttribute(Child, Parent)
+        else begin
+          ParseError(EUnknownNode, Child);
+        end;
+        Child:=Child.NextSibling;
+      end;
+  end;
+
+var
+  ReferenceName: String;
+begin
+  // check if it is referenced, if it is then skip
+  if not HasReference(Node, rnAttributeGroup) then begin
+    if IsReferenced(Node, ReferenceName) then begin // referenced type
+      ParseAttributeGroupReference(Node, Parent, ReferenceName);
+    end
+    else begin
+      ParseChildren;
+    end;
+  end
+  else begin
+    ParseChildren;
+  end;
+end;
+
+procedure TXSD2XMLParser.ParseAttributeGroupReference(const Node: TXmlNode; var Parent: TXmlNode; const ReferenceName: String);
+var
+  refPrefix, refName, attrValue: String;
+//  i: Integer;
+  SearchRoot, SearchNode: TXmlNode;
+  attr: TXmlAttribute;
+  XSDImport: TXSDImport;
+begin
+  TXmlNode.GetNameAndPrefix(ReferenceName, refName, refPrefix);
+
+  if GetXSDBuiltinType(refName) <> etUnknown then
+    Exit;
+
+  if FLastXSDImportsSearchRoot = Nil then begin
+    FLastXSDImportsSearchRoot:=TXSDImportsSearchRootList.Create(False);
+    FLastXSDImportsSearchRoot.Add(FXSD.DocumentElement);
+  end;
+
+  SearchRoot:=FLastXSDImportsSearchRoot.Last;
+  if refPrefix <> '' then begin // check imports to search for type reference
+    attr:=SearchRoot.AttributeList.Find('xmlns:' + refPrefix);
+    if attr <> Nil then begin
+      attrValue:=attr.Value;
+      if attrValue <> '' then begin
+        XSDImport:=FXSDImports.Find(attrValue);
+        if (XSDImport <> Nil) and (XSDImport.Import <> Nil) and (XSDImport.Import.DocumentElement <> Nil) then begin
+          if FXML.DocumentElement <> Nil then
+            FXML.DocumentElement.SetAttribute(attr.Name, attr.Value);
+
+          SearchRoot:=XSDImport.Import.DocumentElement;
+          FLastXSDImportsSearchRoot.Add(SearchRoot);
+
+          if FLastXSDImportsSearchRoot.Count > 1 then begin
+            FIncludePrefix:=True;
+            array_insert(refPrefix, FIncludePrefixString);
+          end;
+        end;
+      end;
+    end;
+  end;
+
+  SearchNode:=SearchRoot.FindNode{Recursive}('attributeGroup', 'name', refName, [ntElement], [nsSearchWithoutPrefix]);
+  if SearchNode <> Nil then
+    ParseAttributeGroup(SearchNode, Parent)
+  else begin
+    ParseError(EReferenceNotFound, Node);
+  end;
+
+  if FLastXSDImportsSearchRoot.Count > 1 then begin
+    FLastXSDImportsSearchRoot.Delete(FLastXSDImportsSearchRoot.Count - 1);
+    if Length(FIncludePrefixString) > 1 then
+      FIncludePrefixString:=array_delete(FIncludePrefixString, High(FIncludePrefixString));
+  end;
+
+  if FLastXSDImportsSearchRoot.Count <= 1 then begin
+    FIncludePrefix:=False;
+    SetLength(FIncludePrefixString, 0);
+    array_insert('', FIncludePrefixString);
+  end;
 end;
 
 procedure TXSD2XMLParser.ParseEnumeration(const Node: TXmlNode; var Parent: TXmlNode);
@@ -1966,7 +2281,7 @@ end;
 
 procedure TXSD2XMLParser.ParseList(const Node: TXmlNode; var Parent: TXmlNode);
 begin
-  raise ENodeException.CreateFmt('Node not supported!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+  ParseError(ENodeNotSupported, Node);
 end;
 
 procedure TXSD2XMLParser.ParseUnion(const Node: TXmlNode; var Parent: TXmlNode);
@@ -1979,7 +2294,7 @@ begin
     if IsSame(Child.Name, 'simpleType') then
       ParseSimpleType(Child, Parent)
     else begin
-      raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+      ParseError(EUnknownNode, Child);
     end;
     Child:=Child.NextSibling;
   end;
@@ -2016,7 +2331,7 @@ begin
       else if IsBuiltinAttr(Child.Name) then
         ParseBuiltinAttr(Child, Parent)
       else begin
-        raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+        ParseError(EUnknownNode, Child);
       end;
       Child:=Child.NextSibling;
     end;
@@ -2030,7 +2345,7 @@ end;
 
 procedure TXSD2XMLParser.ParseGroup(const Node: TXmlNode; var Parent: TXmlNode);
 begin
-  raise ENodeException.CreateFmt('Node not supported!'#13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
+  ParseError(ENodeNotSupported, Node);
 end;
 
 procedure TXSD2XMLParser.ParseSequence(const Node: TXmlNode; var Parent: TXmlNode);
@@ -2063,7 +2378,7 @@ begin
     else if IsBuiltinAttr(Child.Name) then
       ParseBuiltinAttr(Child, Parent)
     else begin
-      raise ENodeException.CreateFmt('Unknown node!'#13#10'%s', [TNodeInfo.GetNodeInfo(Child)]);
+      ParseError(EUnknownNode, Child);
     end;
     Child:=Child.NextSibling;
   end;
@@ -2100,6 +2415,11 @@ begin
     Parent.SetAttribute(AttributeName, Node.Attributes['value'])
   else if IsSame(AttributeName, 'totalDigits') then
     Parent.SetAttribute(AttributeName, Node.Attributes['value']);
+end;
+
+procedure TXSD2XMLParser.ParseError(const Message: String; const Node: TXmlNode);
+begin
+  raise EXSDParseException.CreateFmt(Message + #13#10'%s', [TNodeInfo.GetNodeInfo(Node)]);
 end;
 
 end.
