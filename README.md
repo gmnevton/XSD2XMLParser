@@ -34,4 +34,9 @@
       v.17 - 2019.02.15 - GM - speedup conversion; added custom THashedStringList to hold parsed types; some minor fixes with regard to speedup
            + 2019.02.27 - GM - fixed MakeXSDImport to properly load shemas from local hard drive
            + 2019.03.10 - GM - added SSL/TLS support for schema downloading rutine; forced HTTP request to retrun UTF-8 encoded data
+      v.18 - 2019.05.13 - GM - added "attributeGroup" parsing; moved parsing procedures to protected section and virtualized them; changed ENodeException to EXSDParseException
+           +            - GM - added EXSDImportException; added error description constant strings; changed GetPascalType return values to better matching Pascal language
+           + 2019.06.07 - GM - added EXSD2XMLParserException parent class; added ParseAttributeTypeReference and ParseAttributeValue
+           +            - GM - fixed THashedStringList.Delete to automatically free owned objects; fixed destructor TXSD2XMLParser.Destroy to free runtime created objects (patched memory leak)
+           +            - GM - speedup by fixing function TXSD2XMLParser.HasReference to detect if type is declared; changed procedure TXSD2XMLParser.ParseAttribute
       
