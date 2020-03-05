@@ -18,7 +18,7 @@ object Form1: TForm1
   PixelsPerInch = 96
   TextHeight = 13
   object SplitterEx1: TSplitterEx
-    Left = 305
+    Left = 600
     Top = 0
     Width = 7
     Height = 425
@@ -27,6 +27,7 @@ object Form1: TForm1
     DrawSpacer = True
     MinSize = 300
     ResizeStyle = rsUpdate
+    ExplicitLeft = 305
     ExplicitHeight = 570
   end
   object Panel1: TPanel
@@ -105,7 +106,7 @@ object Form1: TForm1
   object Panel2: TPanel
     Left = 0
     Top = 0
-    Width = 305
+    Width = 600
     Height = 425
     Align = alLeft
     BevelEdges = []
@@ -116,7 +117,7 @@ object Form1: TForm1
     object vstXSDSchemaTree: TVirtualStringTree
       Left = 0
       Top = 0
-      Width = 305
+      Width = 600
       Height = 425
       Align = alClient
       BevelEdges = []
@@ -141,13 +142,14 @@ object Form1: TForm1
       OnGetText = vstXSDSchemaTreeGetText
       OnPaintText = vstXSDSchemaTreePaintText
       OnGetNodeDataSize = vstXSDSchemaTreeGetNodeDataSize
+      ExplicitWidth = 305
       Columns = <>
     end
   end
   object Panel3: TPanel
-    Left = 312
+    Left = 607
     Top = 0
-    Width = 572
+    Width = 277
     Height = 425
     Align = alClient
     BevelEdges = [beLeft]
@@ -156,10 +158,12 @@ object Form1: TForm1
     Caption = 'Panel3'
     ShowCaption = False
     TabOrder = 2
+    ExplicitLeft = 312
+    ExplicitWidth = 572
     object vstXMLTree: TVirtualStringTree
       Left = 0
       Top = 0
-      Width = 570
+      Width = 275
       Height = 425
       Align = alClient
       BevelEdges = []
@@ -188,6 +192,7 @@ object Form1: TForm1
       OnGetText = vstXMLTreeGetText
       OnPaintText = vstXMLTreePaintText
       OnGetNodeDataSize = vstXMLTreeGetNodeDataSize
+      ExplicitWidth = 570
       Columns = <>
     end
   end

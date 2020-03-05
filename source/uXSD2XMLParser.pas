@@ -1,4 +1,4 @@
-{
+﻿{
   XSD to XML Parser v.19.0
 
   Reads XSD schema and outputs XML structure described by schema,
