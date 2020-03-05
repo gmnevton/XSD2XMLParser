@@ -1,13 +1,13 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.18.0
+    XSD to XML Parser v.19.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
       contains only default or fixed values for nodes and attributes.
 
     Author:
-      (C) 2015-2019, Grzegorz Molenda; gmnevton@o2.pl
+      (C) 2015-2020, Grzegorz Molenda; gmnevton@o2.pl
 
     Documentation:
       http://www.w3schools.com/schema/default.asp
@@ -39,4 +39,6 @@
            + 2019.06.07 - GM - added EXSD2XMLParserException parent class; added ParseAttributeTypeReference and ParseAttributeValue
            +            - GM - fixed THashedStringList.Delete to automatically free owned objects; fixed destructor TXSD2XMLParser.Destroy to free runtime created objects (patched memory leak)
            +            - GM - speedup by fixing function TXSD2XMLParser.HasReference to detect if type is declared; changed procedure TXSD2XMLParser.ParseAttribute
-      
+      v.19 - 2020.02.25 - GM - extend union parsing, refactoring to type recognition and parsing; added more checks for not resolved nodes
+           + 2020.02.29 - GM - changed GetPascalType return values to match Pascal language; ParseTypeReference refactoring and speed up
+           + 2020.03.2  - GM - changed parameter naming scheme from Node to xsdNode and Parent to xmlNode for better source readability
