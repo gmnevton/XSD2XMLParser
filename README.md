@@ -1,13 +1,13 @@
 # XSD2XMLParser
 
-    XSD to XML Parser v.19.0
+    XSD to XML Parser v.23.0
     XSD Schema to XML Parser / Converter for Delphi 2010-XE10.3
 
     Reads XSD schema and outputs XML structure described by schema,
       contains only default or fixed values for nodes and attributes.
 
     Author:
-      (C) 2015-2020, Grzegorz Molenda; gmnevton@o2.pl
+      (C) 2015-2025, Grzegorz Molenda; gmnevton@o2.pl
 
     Documentation:
       http://www.w3schools.com/schema/default.asp
@@ -29,7 +29,7 @@
       v.12 - 2017.09.22 - GM - changes to Xml.VerySimple, ScanNodes procedure is now a function, that returns False for break in loop
       v.13 - 2017.10.18 - GM - added extended attribute 'default' to TXSD2XMLParser.IsBuiltinAttr
       v.14 - 2018.11.23 - GM - added detection for > Circular Type Reference < to TXSD2XMLParser.ParseTypeReference, ParseSimpleType, ParseComplexType
-      v.15 - 2018.12.19 - GM - fix, skip comments from xml schema
+      v.15 - 2018.12.19 - GM - fix, skip annotations from xml schema
       v.16 - 2019.01.17 - GM - do not skip 'annotation' for element nodes, just resolve them if xsdParseAnnotations is in Options; replace ChildNodes.First by FirstChild
       v.17 - 2019.02.15 - GM - speedup conversion; added custom THashedStringList to hold parsed types; some minor fixes with regard to speedup
            + 2019.02.27 - GM - fixed MakeXSDImport to properly load shemas from local hard drive
@@ -42,3 +42,8 @@
       v.19 - 2020.02.25 - GM - extend union parsing, refactoring to type recognition and parsing; added more checks for not resolved nodes
            + 2020.02.29 - GM - changed GetPascalType return values to match Pascal language; ParseTypeReference refactoring and speed up
            + 2020.03.2  - GM - changed parameter naming scheme from Node to xsdNode and Parent to xmlNode for better source readability
+      v.20 - 2022.08.24 - GM - fixed type reference search,
+           +            - GM - added function TXSDImportList.FindType
+      v.21 - 2024.06.14 - GM - fix, skip comments from xml schema
+      v.22 - 2024.11.28 - GM - changed GetPascalType return values to match shortened Pascal language types: string, boolean, integer, float, date, time, datetime
+      v.23 - 2025.01.13 - GM - fixed infinite loop in TXSD2XMLParser.ParseTypeReference type searching
